@@ -9,11 +9,19 @@
 //
 //******************************************************************************
 
+#include <iostream>
+#include <fstream>
+#include <vector>
+
 #include <tchar.h>
 #include <stdio.h>
 #include <string.h>
 #include <wmsdk.h>
 #include <strsafe.h>
+
+#ifdef UNICODE
+#error UNICODE is defined!
+#endif
 
 //------------------------------------------------------------------------------
 // Macros
@@ -50,6 +58,95 @@
     }
 
 #endif // SAFE_ARRAYDELETE
+
+//------------------------------------------------------------------------------
+VOID CALLBACK readComplete(DWORD err, DWORD bytes, LPOVERLAPPED ovlp)
+{
+}
+
+//------------------------------------------------------------------------------
+// Name: ReadAllBytes()
+// Desc: Reads contents of a file into memory.
+// Taken (and tweaked) from
+//    https://codereview.stackexchange.com/questions/22901/reading-all-bytes-from-a-file
+//------------------------------------------------------------------------------
+//static std::vector<char> ReadAllBytes(LPWSTR filename)
+BYTE *ReadAllBytes(LPWSTR filename, DWORD *pcbSize)
+{
+	OVERLAPPED serverOvlp = { 0 };
+	HANDLE hFile;
+	DWORD cbSize;
+	BYTE *fileBuf;
+
+	hFile = CreateFileW(filename, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	cbSize = GetFileSize(hFile, NULL);
+	fileBuf = new BYTE[cbSize];
+	ReadFileEx(hFile, fileBuf, cbSize, &serverOvlp, readComplete);
+	*pcbSize = cbSize;
+
+	//std::ifstream ifs(filename, std::ios::binary | std::ios::ate);
+    //std::ifstream::pos_type pos = ifs.tellg();
+    //std::vector<char> result(pos);
+	//ifs.seekg(0, std::ios::beg);
+    //ifs.read(&result[0], pos);
+
+    return fileBuf;
+}
+
+//------------------------------------------------------------------------------
+// Name: ConvertMBtoWC()
+// Desc: Converts a string from multibyte to wide character.
+//------------------------------------------------------------------------------
+#ifndef UNICODE
+
+HRESULT ConvertMBtoWC(LPCTSTR ptszInString, __out LPWSTR *ppwszOutString)
+{
+	if (ptszInString == NULL || ppwszOutString == NULL)
+	{
+		return(E_INVALIDARG);
+	}
+
+	HRESULT hr = S_OK;
+	int     nSizeCount = 0;
+
+	*ppwszOutString = NULL;
+
+	do
+	{
+		//
+		// Get the memory read for this string
+		//
+		nSizeCount = MultiByteToWideChar(CP_ACP, 0, ptszInString, -1, NULL, 0);
+		if (0 == nSizeCount)
+		{
+			hr = HRESULT_FROM_WIN32(GetLastError());
+			break;
+		}
+
+		*ppwszOutString = new WCHAR[nSizeCount];
+		if (NULL == *ppwszOutString)
+		{
+			hr = HRESULT_FROM_WIN32(GetLastError());
+			break;
+		}
+
+		if (0 == MultiByteToWideChar(CP_ACP, 0, ptszInString, -1, *ppwszOutString, nSizeCount))
+		{
+			hr = HRESULT_FROM_WIN32(GetLastError());
+			break;
+		}
+	} while (FALSE);
+
+	if (FAILED(hr))
+	{
+		SAFE_ARRAYDELETE(*ppwszOutString);
+		_tprintf(_T("Internal error ( hr=0x%08x )\n"), hr);
+	}
+
+	return(hr);
+}
+
+#endif // UNICODE
 
 //------------------------------------------------------------------------------
 // Name: EditorOpenFile()
@@ -133,13 +230,19 @@ HRESULT ModifyAttrib( __in LPWSTR pwszInFile,
 
     IWMMetadataEditor   * pEditor       = NULL;
     IWMHeaderInfo3      * pHeaderInfo3  = NULL;
+
     BYTE*               pbAttribValue   = NULL;
     DWORD               dwAttribValueLen = 0;
+    BYTE*               pbReadAllBytes = NULL;
+    WM_PICTURE          picAlbum;
+
     WMT_ATTR_DATATYPE   AttribDataType  = (WMT_ATTR_DATATYPE) wAttribType;
+
     DWORD               dwAttribValue   = 0;
     WORD                wAttribValue    = 0;
     QWORD               qwAttribValue   = 0;
     BOOL                fAttribValue    = 0;
+    //std::vector<char>   vectorAttribValue;
 
     do
     {
@@ -185,8 +288,21 @@ HRESULT ModifyAttrib( __in LPWSTR pwszInFile,
 
             break;
 
+        case WMT_TYPE_BINARY:
+            pbReadAllBytes = ReadAllBytes(pwszAttribValue, &dwAttribValueLen);
+
+            picAlbum.pwszMIMEType = L"image/jpeg";
+            picAlbum.bPictureType = 3; // 'Front album cover'
+            picAlbum.pwszDescription = L"Album cover";
+            picAlbum.dwDataLen = dwAttribValueLen;
+            picAlbum.pbData = pbReadAllBytes;
+
+            pbAttribValue = (BYTE*)&picAlbum;
+
+            break;
+
         default:
-            _tprintf( _T( "Unsupported data type for SetAttribute\n" ) );
+            _tprintf( _T( "Unsupported data type for ModifyAttribute\n" ) );
             hr = E_INVALIDARG;
             break;
         }
@@ -253,6 +369,10 @@ HRESULT AddAttrib( __in LPWSTR pwszInFile,
 
     BYTE*               pbAttribValue   = NULL;
     DWORD               dwAttribValueLen = 0;
+    BYTE*               pbReadAllBytes = NULL;
+    WM_PICTURE          picAlbum;
+
+    WORD                wIndex;
 
     WMT_ATTR_DATATYPE   AttribDataType  = ( WMT_ATTR_DATATYPE) wAttribType;
 
@@ -260,6 +380,7 @@ HRESULT AddAttrib( __in LPWSTR pwszInFile,
     WORD                wAttribValue    = 0;
     QWORD               qwAttribValue   = 0;
     BOOL                fAttribValue    = 0;
+    //std::vector<char>   vectorAttribValue;
 
     do
     {
@@ -305,15 +426,28 @@ HRESULT AddAttrib( __in LPWSTR pwszInFile,
 
             break;
 
+        case WMT_TYPE_BINARY:
+            pbReadAllBytes = ReadAllBytes(pwszAttribValue, &dwAttribValueLen);
+
+            picAlbum.pwszMIMEType = L"image/jpeg";
+            picAlbum.bPictureType = 3; // 'Front album cover'
+            picAlbum.pwszDescription = L"Album cover";
+            picAlbum.dwDataLen = dwAttribValueLen;
+            picAlbum.pbData = pbReadAllBytes;
+
+            pbAttribValue = (BYTE *)&picAlbum;
+
+            break;
+
         default:
-            _tprintf( _T( "Unsupported data type for SetAttribute\n" ) );
+            _tprintf( _T( "Unsupported data type for AddAttribute\n" ) );
             hr = E_INVALIDARG;
             break;
         }
 
         hr = pHeaderInfo3->AddAttribute( wStreamNum,
                                          pwszAttribName,
-                                         NULL,
+                                         &wIndex,
                                          AttribDataType, 
                                          wLangIndex,
                                          pbAttribValue,
@@ -373,6 +507,9 @@ HRESULT SetAttrib( __in LPWSTR pwszInFile,
 
     BYTE*               pbAttribValue   = NULL;
     WORD                wAttribValueLen = 0;
+    DWORD               dwAttribValueLen;
+    BYTE*               pbReadAllBytes = NULL;
+    WM_PICTURE          picAlbum;
 
     WMT_ATTR_DATATYPE   AttribDataType  = ( WMT_ATTR_DATATYPE ) wAttribType;
 
@@ -380,6 +517,7 @@ HRESULT SetAttrib( __in LPWSTR pwszInFile,
     WORD                wAttribValue    = 0;
     QWORD               qwAttribValue   = 0;
     BOOL                fAttribValue    = 0;
+    std::vector<char>   vectorAttribValue;
 
     do
     {
@@ -422,6 +560,21 @@ HRESULT SetAttrib( __in LPWSTR pwszInFile,
             fAttribValue = (BOOL)_wtoi( pwszAttribValue );                              
             wAttribValueLen = sizeof(BOOL);
             pbAttribValue = (BYTE *)&fAttribValue;
+
+            break;
+
+        case WMT_TYPE_BINARY:
+            pbReadAllBytes = ReadAllBytes(pwszAttribValue, &dwAttribValueLen);
+
+            picAlbum.pwszMIMEType = L"image/jpeg";
+            picAlbum.bPictureType = 3; // 'Front album cover'
+            picAlbum.pwszDescription = L"Album cover";
+            picAlbum.dwDataLen = dwAttribValueLen;
+            picAlbum.pbData = pbReadAllBytes;
+
+			pbAttribValue = (BYTE*)&picAlbum;
+			// I presume this API screws up for buffers (WM/Picture) over 64K.
+			wAttribValueLen = (WORD)dwAttribValueLen;
 
             break;
 
@@ -640,6 +793,20 @@ HRESULT PrintAttribute( WORD wIndex,
          wIndex, wszName, wStream, wLangID, pwszType, pwszValue );
 
     return( S_OK );
+}
+
+//------------------------------------------------------------------------------
+// Name: WriteAttribute()
+// Desc: Write the specified attribute to the specified file.
+//------------------------------------------------------------------------------
+HRESULT WriteAttribute(
+	BYTE * pbValue,
+	DWORD dwValueLen,
+	LPTSTR ptszFileout)
+{
+	std::ofstream ofs(ptszFileout, std::ios::binary | std::ios::app);
+	ofs.write((char *)pbValue, dwValueLen);
+	return(S_OK);
 }
 
 //------------------------------------------------------------------------------
@@ -927,60 +1094,246 @@ HRESULT ShowAttributes( __in LPWSTR pwszInFile, WORD wStreamNum )
 }
 
 //------------------------------------------------------------------------------
-// Name: ConvertMBtoWC()
-// Desc: Converts a string from multibyte to wide character.
+// Name: DumpAttributes3()
+// Desc: Dump (write) the specified attribute, of the specified stream, to the
+//       specified file,
+//       using IWMHeaderInfo3.
 //------------------------------------------------------------------------------
-#ifndef UNICODE
-
-HRESULT ConvertMBtoWC( LPCTSTR ptszInString, __out LPWSTR *ppwszOutString )
+HRESULT DumpAttributes3(__in LPWSTR pwszInFile, WORD wStreamNum, LPTSTR ptszAttribNameInput, LPTSTR ptszFileout)
 {
-    if( ptszInString == NULL || ppwszOutString == NULL )
-    {
-        return( E_INVALIDARG );
-    }
+	HRESULT             hr = S_OK;
 
-    HRESULT hr          = S_OK;
-    int     nSizeCount  = 0;
+	IWMMetadataEditor   * pEditor = NULL;
+	IWMHeaderInfo3      * pHeaderInfo3 = NULL;
 
-    *ppwszOutString     = NULL;
+	WCHAR*             pwszAttribNameInput = NULL;
+	WCHAR*             pwszAttribName = NULL;
+	WORD               wAttribNameLen = 0;
+	WMT_ATTR_DATATYPE  wAttribType;
+	WORD               wLanguageIndex = 0;
+	BYTE*              pbAttribValue = NULL;
+	DWORD              dwAttribValueLen = 0;
 
-    do
-    {
-        //
-        // Get the memory reqd for this string
-        //
-        nSizeCount = MultiByteToWideChar( CP_ACP, 0, ptszInString, -1, NULL, 0 );
-        if( 0 ==  nSizeCount )
-        {
-            hr = HRESULT_FROM_WIN32( GetLastError() );
-            break;
-        }
+	do
+	{
+		hr = EditorOpenFile(pwszInFile, &pEditor, NULL, &pHeaderInfo3);
+		if (FAILED(hr))
+			break;
 
-        *ppwszOutString = new WCHAR[ nSizeCount ];
-        if( NULL == *ppwszOutString )
-        {
-            hr = HRESULT_FROM_WIN32( GetLastError() );
-            break;
-        }
+		WORD wAttributeCount = 0;
 
-        if( 0 == MultiByteToWideChar( CP_ACP, 0, ptszInString, -1, *ppwszOutString, nSizeCount ) )
-        {
-            hr = HRESULT_FROM_WIN32( GetLastError() );
-            break;
-        }
-    }
-    while( FALSE );
-    
-    if( FAILED( hr ) )
-    {
-        SAFE_ARRAYDELETE( *ppwszOutString );
-        _tprintf( _T( "Internal error ( hr=0x%08x )\n" ), hr );
-    }
+		hr = pHeaderInfo3->GetAttributeCountEx(wStreamNum, &wAttributeCount);
+		if (FAILED(hr))
+		{
+			_tprintf(_T("GetAttributeCount failed for stream = %d ( hr=0x%08x ).\n"), wStreamNum, hr);
+			break;
+		}
 
-    return( hr );
+#ifndef UNICODE
+		hr = ConvertMBtoWC(ptszAttribNameInput, &pwszAttribNameInput);
+		if (FAILED(hr))
+		{
+			break;
+		}
+#endif
+
+		for (WORD wAttribIndex = 0; wAttribIndex < wAttributeCount; wAttribIndex++)
+		{
+			SAFE_ARRAYDELETE(pwszAttribName);
+			SAFE_ARRAYDELETE(pbAttribValue);
+
+			hr = pHeaderInfo3->GetAttributeByIndexEx(wStreamNum,
+				wAttribIndex,
+				pwszAttribName,
+				&wAttribNameLen,
+				&wAttribType,
+				&wLanguageIndex,
+				pbAttribValue,
+				&dwAttribValueLen);
+			if (FAILED(hr))
+			{
+				_tprintf(_T("GetAttributeByIndexEx failed for index = %d ( hr=0x%08x ).\n"), wAttribIndex, hr);
+				break;
+			}
+
+			pwszAttribName = new WCHAR[wAttribNameLen];
+			if (NULL == pwszAttribName)
+			{
+				hr = E_OUTOFMEMORY;
+				break;
+			}
+
+			pbAttribValue = new BYTE[dwAttribValueLen];
+			if (NULL == pbAttribValue)
+			{
+				hr = E_OUTOFMEMORY;
+				break;
+			}
+
+			hr = pHeaderInfo3->GetAttributeByIndexEx(wStreamNum,
+				wAttribIndex,
+				pwszAttribName,
+				&wAttribNameLen,
+				&wAttribType,
+				&wLanguageIndex,
+				pbAttribValue,
+				&dwAttribValueLen);
+			if (FAILED(hr))
+			{
+				_tprintf(_T("GetAttributeByIndexEx failed for index = %d ( hr=0x%08x ).\n"),
+					wAttribIndex, hr);
+				break;
+			}
+
+			// If this is the attrib we want, output and bust out; we're done.
+			if (wcscmp(pwszAttribName, pwszAttribNameInput) == 0)
+			{
+				hr = WriteAttribute(
+					pbAttribValue,
+					dwAttribValueLen,
+					ptszFileout);
+				break;
+			}
+		}
+
+		hr = pEditor->Close();
+		if (FAILED(hr))
+		{
+			_tprintf(_T("Could not close the file %ws ( hr=0x%08x ).\n"), pwszInFile, hr);
+			break;
+		}
+	} while (FALSE);
+
+	SAFE_RELEASE(pHeaderInfo3);
+	SAFE_RELEASE(pEditor);
+
+	SAFE_ARRAYDELETE(pwszAttribName);
+	SAFE_ARRAYDELETE(pbAttribValue);
+
+	return(hr);
 }
 
-#endif // UNICODE
+//------------------------------------------------------------------------------
+// Name: DumpAttributes()
+// Desc: Dump (write) the specified attribute, of the specified stream, to the
+//       specified file,
+//       using IWMHeaderInfo.
+//------------------------------------------------------------------------------
+HRESULT DumpAttributes(__in LPWSTR pwszInFile, WORD wStreamNum, LPTSTR ptszAttribNameInput, LPTSTR ptszFileout)
+{
+	HRESULT             hr = S_OK;
+
+	IWMMetadataEditor   * pEditor = NULL;
+	IWMHeaderInfo*      pHeaderInfo = NULL;
+
+	WCHAR               * pwszAttribNameInput = NULL;
+	WCHAR               * pwszAttribName = NULL;
+	WORD                wAttribNameLen = 0;
+	WMT_ATTR_DATATYPE   wAttribType;
+	BYTE                * pbAttribValue = NULL;
+	WORD                wAttribValueLen = 0;
+
+	do
+	{
+		hr = EditorOpenFile(pwszInFile, &pEditor, &pHeaderInfo, NULL);
+		if (FAILED(hr))
+		{
+			break;
+		}
+
+		WORD wAttributeCount = 0;
+
+		hr = pHeaderInfo->GetAttributeCount(wStreamNum, &wAttributeCount);
+		if (FAILED(hr))
+		{
+			_tprintf(_T("GetAttributeCount failed for stream = %d ( hr=0x%08x ).\n"),
+				wStreamNum, hr);
+			break;
+		}
+
+#ifndef UNICODE
+		hr = ConvertMBtoWC(ptszAttribNameInput, &pwszAttribNameInput);
+		if (FAILED(hr))
+		{
+			break;
+		}
+#endif
+		for (WORD wAttribIndex = 0; wAttribIndex < wAttributeCount; wAttribIndex++)
+		{
+			SAFE_ARRAYDELETE(pwszAttribName);
+			SAFE_ARRAYDELETE(pbAttribValue);
+
+			hr = pHeaderInfo->GetAttributeByIndex(wAttribIndex,
+				&wStreamNum,
+				pwszAttribName,
+				&wAttribNameLen,
+				&wAttribType,
+				pbAttribValue,
+				&wAttribValueLen);
+			if (FAILED(hr))
+			{
+				_tprintf(_T("GetAttributeByIndex failed for index = %d ( hr=0x%08x ).\n"),
+					wAttribIndex, hr);
+				break;
+			}
+
+			pwszAttribName = new WCHAR[wAttribNameLen];
+			if (NULL == pwszAttribName)
+			{
+				hr = E_OUTOFMEMORY;
+				break;
+			}
+
+			pbAttribValue = new BYTE[wAttribValueLen];
+			if (NULL == pbAttribValue)
+			{
+				hr = E_OUTOFMEMORY;
+				break;
+			}
+
+			hr = pHeaderInfo->GetAttributeByIndex(wAttribIndex,
+				&wStreamNum,
+				pwszAttribName,
+				&wAttribNameLen,
+				&wAttribType,
+				pbAttribValue,
+				&wAttribValueLen);
+			if (FAILED(hr))
+			{
+				_tprintf(_T("GetAttributeByIndex failed for index = %d ( hr=0x%08x ).\n"),
+					wAttribIndex, hr);
+				break;
+			}
+
+			// If this is the attrib we want, output and bust out; we're done.
+			if (wcscmp(pwszAttribName, pwszAttribNameInput) == 0)
+			{
+				hr = WriteAttribute(
+					pbAttribValue,
+					wAttribValueLen,
+					ptszFileout
+					);
+				break;
+			}
+
+		}
+
+		hr = pEditor->Close();
+		if (FAILED(hr))
+		{
+			_tprintf(_T("Could not close the file %ws ( hr=0x%08x ).\n"), pwszInFile, hr);
+			break;
+		}
+	} while (FALSE);
+
+	SAFE_RELEASE(pHeaderInfo);
+	SAFE_RELEASE(pEditor);
+
+	SAFE_ARRAYDELETE(pwszAttribName);
+	SAFE_ARRAYDELETE(pbAttribValue);
+
+	return(hr);
+}
 
 //------------------------------------------------------------------------------
 // Name: Usage()
@@ -990,7 +1343,9 @@ void Usage()
 {
     _tprintf( _T( "MetadataEdit\t <filename> show <stream number>\n" ) );
     _tprintf( _T( "\t\t <filename> show3 <stream number>\n" ) );
-    _tprintf( _T( "\t\t <filename> delete <stream number> <attrib index>\n" ) );
+    _tprintf( _T( "\t\t <filename> dump <stream number> <attrib name> <output file>\n"));
+	_tprintf( _T( "\t\t <filename> dump3 <stream number> <attrib name> <output file>\n"));
+	_tprintf( _T( "\t\t <filename> delete <stream number> <attrib index>\n" ) );
     _tprintf( _T( "\t\t <filename> set <stream number> <attrib name> <attrib type> <attrib value>\n" ) );
     _tprintf( _T( "\t\t <filename> add <stream number> <attrib name> <attrib type> <attrib value> <attrib language>\n" ) );
     _tprintf( _T( "\t\t <filename> modify <stream number> <attrib index> <attrib type> <attrib value> <attrib language>\n" ) );
@@ -998,9 +1353,11 @@ void Usage()
     _tprintf( _T( "\n Attrib Type can have one of the following values\n" ) );
     _tprintf( _T( "\t 0 - WMT_TYPE_DWORD\n" ) );
     _tprintf( _T( "\t 1 - WMT_TYPE_STRING\n" ) );
-    _tprintf( _T( "\t 3 - WMT_TYPE_BOOL\n" ) );
+    _tprintf( _T( "\t 2 - WMT_TYPE_BINARY (attrib value = filename.jpg)\n" ) );
+    _tprintf( _T( "\t 3 - WMT_TYPE_BOOL\n"));
     _tprintf( _T( "\t 4 - WMT_TYPE_QWORD\n" ) );
     _tprintf( _T( "\t 5 - WMT_TYPE_WORD\n" ) );
+    _tprintf( _T( "\t 6 - WMT_TYPE_GUID\n" ) );
 }
 
 //------------------------------------------------------------------------------
@@ -1024,6 +1381,7 @@ int __cdecl _tmain( int argc, __in_ecount(argc) LPTSTR argv[] )
 
     LPTSTR  ptszAttribName  = NULL;
     LPTSTR  ptszAttribValue = NULL;
+	LPTSTR  ptszFileout = NULL;
 
     WORD    wAttribType     = 0;
     WORD    wLangIndex      = 0;
@@ -1053,8 +1411,11 @@ int __cdecl _tmain( int argc, __in_ecount(argc) LPTSTR argv[] )
         }
 #endif
 
-        if( 0 == _tcsicmp( argv[2], _T( "show" ) ) )
+		// -----------------------------------------------------
+
+		if( 0 == _tcsicmp( argv[2], _T( "show" ) ) )
         {
+			// <filename> show <stream number>
             if( 4 != argc )
             {
                 Usage();
@@ -1075,8 +1436,12 @@ int __cdecl _tmain( int argc, __in_ecount(argc) LPTSTR argv[] )
                 break;
             }
         }
-        else if(0 == _tcsicmp( argv[2], _T( "show3" ) ) )
+
+		// -----------------------------------------------------
+
+		else if(0 == _tcsicmp( argv[2], _T( "show3" ) ) )
         {
+			// <filename> show3 <stream number>
             if( 4 != argc )
             {
                 Usage();
@@ -1097,8 +1462,68 @@ int __cdecl _tmain( int argc, __in_ecount(argc) LPTSTR argv[] )
                 break;
             }
         }
-        else if(0 == _tcsicmp( argv[2], _T( "delete" ) ) )
+
+		// -----------------------------------------------------
+
+		else if (0 == _tcsicmp(argv[2], _T("dump")))
         {
+			// <filename> dump <stream number> <attrib name> <output file>
+            if (6 != argc)
+            {
+                Usage();
+                hr = E_INVALIDARG;
+                break;
+            }
+
+            wStreamNum = (WORD)_ttoi(argv[3]);
+            ptszAttribName = (LPTSTR)argv[4];
+            ptszFileout = (LPTSTR)argv[5];
+
+#ifndef UNICODE
+            hr = DumpAttributes(pwszInFile, wStreamNum, ptszAttribName, ptszFileout);
+#else
+            hr = DumpAttributes(ptszInFile, wStreamNum, ptszAttribName, ptszFileout);
+#endif
+
+            if (FAILED(hr))
+            {
+                break;
+            }
+        }
+
+		// -----------------------------------------------------
+
+		else if (0 == _tcsicmp(argv[2], _T("dump3")))
+		{
+			// <filename> dump <stream number> <attrib name> <output file>
+			if (6 != argc)
+			{
+				Usage();
+				hr = E_INVALIDARG;
+				break;
+			}
+
+			wStreamNum = (WORD)_ttoi(argv[3]);
+			ptszAttribName = (LPTSTR)argv[4];
+			ptszFileout = (LPTSTR)argv[5];
+
+#ifndef UNICODE
+			hr = DumpAttributes3(pwszInFile, wStreamNum, ptszAttribName, ptszFileout);
+#else
+			hr = DumpAttributes3(ptszInFile, wStreamNum, ptszAttribName, ptszFileout);
+#endif
+
+			if (FAILED(hr))
+			{
+				break;
+			}
+		}
+
+		// -----------------------------------------------------
+
+		else if(0 == _tcsicmp( argv[2], _T( "delete" ) ) )
+        {
+			// <filename> delete <stream number> <attrib index>
             if( 5 != argc )
             {
                 Usage();
@@ -1132,8 +1557,12 @@ int __cdecl _tmain( int argc, __in_ecount(argc) LPTSTR argv[] )
                 break;
             }
         }
-        else if(0 == _tcsicmp( argv[2], _T( "set" ) ) )
+
+		// -----------------------------------------------------
+
+		else if(0 == _tcsicmp( argv[2], _T( "set" ) ) )
         {
+			// <filename> set <stream number> <attrib name> <attrib type> <attrib value>
             if( 7 != argc )
             {
                 Usage();
@@ -1178,8 +1607,12 @@ int __cdecl _tmain( int argc, __in_ecount(argc) LPTSTR argv[] )
                 break;
             }
         }
-        else if(0 == _tcsicmp( argv[2], _T( "add" ) ) )
+
+		// -----------------------------------------------------
+
+		else if(0 == _tcsicmp( argv[2], _T( "add" ) ) )
         {
+			// <filename> add <stream number> <attrib name> <attrib type> <attrib value> <attrib language>
             if( 8 != argc )
             {
                 Usage();
@@ -1228,8 +1661,12 @@ int __cdecl _tmain( int argc, __in_ecount(argc) LPTSTR argv[] )
                 break;
             }
         }
-        else if(0 == _tcsicmp( argv[2], _T( "modify" ) ) )
+
+		// -----------------------------------------------------
+
+		else if(0 == _tcsicmp( argv[2], _T( "modify" ) ) )
         {
+			// <filename> modify <stream number> <attrib index> <attrib type> <attrib value> <attrib language>
             if( 8 != argc )
             {
                 Usage();
@@ -1271,7 +1708,10 @@ int __cdecl _tmain( int argc, __in_ecount(argc) LPTSTR argv[] )
                 break;
             }
         }
-        else
+
+		// -----------------------------------------------------
+
+		else
         {
             Usage();
             hr = E_INVALIDARG;
